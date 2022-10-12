@@ -34,7 +34,7 @@ function read_installation_path {
 		printf "$filepath is not a directory...\n"
 	done
 	if [ $max_attempts -lt 0 ]; then
-		fail "3 invalid attempts. Exiting..."
+		fail "Three invalid attempts. Exiting..."
 	fi
 	OUT_DIR="$filepath"
 }

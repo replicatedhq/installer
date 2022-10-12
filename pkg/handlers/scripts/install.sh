@@ -23,16 +23,19 @@ function read_installation_path {
 		echo "Shell is not interactive. Using default path ${OUT_DIR}."
 		return
 	fi
-	printf "Enter installation path (leave blank for ${OUT_DIR}): "
-	while true ; do
+	max_attempts=3
+	while max_attempts=$((max_attempts-1)) && [ $max_attempts -ge 0 ]; do
+		printf "Enter installation path (leave blank for ${OUT_DIR}): "
 		read -r -p "" filepath </dev/tty
 		filepath="${filepath:-$OUT_DIR}"
 		if [ -d "$filepath" ] ; then
 			break
 		fi
 		printf "$filepath is not a directory...\n"
-		printf "Enter a valid installation path (leave blank for ${OUT_DIR}): "
 	done
+	if [ $max_attempts -lt 0 ]; then
+		fail "3 invalid attempts. Exiting..."
+	fi
 	OUT_DIR="$filepath"
 }
 function confirmY {

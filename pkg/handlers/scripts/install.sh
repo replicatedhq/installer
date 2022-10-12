@@ -10,7 +10,7 @@ function fail {
 	echo "Error: $msg" 1>&2
 	exit 1
 }
-function prompts_can_prompt() {
+function prompts_can_prompt {
 	# Need the TTY to accept input and stdout to display
 	# Prompts when running the script through the terminal but not as a subshell
 	if [ -t 1 ] && [ -c /dev/tty ]; then
@@ -20,24 +20,24 @@ function prompts_can_prompt() {
 }
 function read_installation_path {
 	if ! prompts_can_prompt ; then
-		echo "Automatically setting default path: ${OUT_DIR}, shell is not interactive"
+		echo "Shell is not interactive. Using default path ${OUT_DIR}."
 		return
 	fi
-	printf "Select installation path:[press 'Enter' to use default path ${OUT_DIR}]: \n"
-	filepath=
+	printf "Enter installation path (leave blank for ${OUT_DIR}): "
 	while true ; do
-		read -r -p "Path:  " filepath </dev/tty
+		read -r -p "" filepath </dev/tty
 		filepath="${filepath:-$OUT_DIR}"
 		if [ -d "$filepath" ] ; then
 			break
 		fi
 		printf "$filepath is not a directory...\n"
+		printf "Enter a valid installation path (leave blank for ${OUT_DIR}): "
 	done
 	OUT_DIR="$filepath"
 }
 function confirmY {
 	if ! prompts_can_prompt ; then
-		echo "Automatically denying prompt, shell is not interactive"
+		echo "Shell is not interactive. Automatically denying prompt."
 		return 1
 	fi
 	read -r -p "" response < /dev/tty
@@ -144,17 +144,15 @@ function install {
 	chmod +x $TMP_BIN || fail "chmod +x failed"
 	# read installation path
 	read_installation_path
-	echo "Installing to $OUT_DIR"
 	[ ! -d $OUT_DIR ] && fail "output directory missing: $OUT_DIR"
 	if [ ! -w $OUT_DIR ]; then 
 		echo "You don't have write permissions to $OUT_DIR"
-		echo "Would you like to enter your password to grant write permissions"
-		echo "to $OUT_DIR? [y/n]"
+		printf "Do you want to enter your password to grant write permissions to $OUT_DIR [Y/n]? "
 		if confirmY ; then
 			sudo mv $TMP_BIN $OUT_DIR/kubectl-$PROG || fail "mv failed" #FINAL STEP!
 		else
 			echo "Please run the following command to complete the installation:"
-			echo "        sudo mv $TMP_DIR/${TMP_BIN:2} $OUT_DIR/kubectl-$PROG"
+			echo "    sudo mv $TMP_DIR/${TMP_BIN:2} $OUT_DIR/kubectl-$PROG"
 			exit 1
 		fi
 	else

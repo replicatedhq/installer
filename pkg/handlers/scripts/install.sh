@@ -88,14 +88,17 @@ function install {
 	*) fail "unknown os: $(uname -s)";;
 	esac
 	#find ARCH
-	if uname -m | grep amd64 > /dev/null; then
+	UNAME=`uname -m`
+	if [ "$UNAME" == "amd64" ] || [ "$UNAME" == "x86_64" ]; then
 		ARCH="amd64"
-	elif uname -m | grep arm > /dev/null; then
+	elif [ "$UNAME" == "arm64" ] || [ "$UNAME" == "aarch64" ]; then
+		ARCH="arm64"
+	elif [ "$UNAME" == "arm" ]; then
 		ARCH="arm"
-	elif uname -m | grep 386 > /dev/null; then
+	elif [ "$UNAME" == "i386" ]; then
 		ARCH="386"
 	else
-		fail "unknown arch: $(uname -m)"
+		fail "unknown arch: $UNAME"
 	fi
 	#choose from asset list
 	URL=""

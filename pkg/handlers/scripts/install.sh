@@ -104,7 +104,7 @@ function install {
 	URL=""
 	FTYPE=""
 	case "${OS}_${ARCH}" in{{ range .Assets }}
-	"{{ .OS }}_{{ .Arch }}")
+	{{ .OS }}_{{ .Arch }})
 		URL="{{ .URL }}"
 		FTYPE="{{ .Type }}"
 		;;{{end}}

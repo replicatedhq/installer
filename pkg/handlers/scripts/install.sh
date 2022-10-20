@@ -51,17 +51,6 @@ function confirmY {
 		return 1
 	fi
 }
-DARWIN_URL=""
-DARWIN_FTYPE=""
-#kots_darwin_all asset can be used for both amd64 and arm64 architectures
-function set_darwin_url {
-	{{ range .Assets }}
-		if echo "{{ .URL }}" | grep -q 'kots_darwin_all'; then
-			DARWIN_URL="{{ .URL }}"
-			DARWIN_FTYPE="{{ .Type }}"
-		fi
-	{{end}}
-}
 function install {
 	#settings
 	USER="{{ .User }}"
@@ -115,19 +104,10 @@ function install {
 	URL=""
 	FTYPE=""
 	case "${OS}_${ARCH}" in{{ range .Assets }}
-	"{{ .OS }}_{{ .Arch }}")
+	{{ .OS }}_{{ .Arch }})
 		URL="{{ .URL }}"
 		FTYPE="{{ .Type }}"
 		;;{{end}}
-	darwin_*)
-		set_darwin_url
-		if [ "$DARWIN_URL" == "" ] && [ "$DARWIN_FTYPE" == "" ]; then
-			fail "No asset for platform ${OS}-${ARCH}"
-		else
-			URL=$DARWIN_URL
-			FTYPE=$DARWIN_FTYPE
-		fi
-		;;
 	*) fail "No asset for platform ${OS}-${ARCH}";;
 	esac
 	#got URL! download it...

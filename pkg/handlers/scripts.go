@@ -59,6 +59,9 @@ func parseRelease(release *github.RepositoryRelease, owner, project string) (Tem
 		if os == "mac" || os == "osx" {
 			os = "darwin"
 		}
+		if os == "darwin" && arch == "" {
+			arch = "*" // mac binary is universal
+		}
 		if arch == "64" || arch == "" {
 			arch = "amd64" //default
 		} else if arch == "32" {

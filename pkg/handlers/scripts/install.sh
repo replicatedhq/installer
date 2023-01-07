@@ -78,8 +78,8 @@ done
 # This is trapped on EXIT signals to ensure it is always called on failures.
 function cleanup {
 	popd &> /dev/null
-	if [[ -d $TMP_DIR ]]; then
-		rm -rf $TMP_DIR
+	if [[ -d "${TMP_DIR}" ]]; then
+		rm -rf "${TMP_DIR}"
 	fi
 }
 trap cleanup EXIT
@@ -98,9 +98,32 @@ function fail {
 	exit 1
 }
 
+# Prompt the user if they would like to create the output directory.
+function prompt_create_dir {
+	if [[ ! -t 0 && ! -t /dev/stdin ]]; then
+		return false
+	fi
+
+	echo ""
+	echo "The output directory ${OUT_DIR} does not exist, should it be created with sudo?"
+	read -p "Y or N? " -n 1 -r REPLY
+	echo ""
+	case "${REPLY}" in
+		y|Y)
+			if [[ -z "${PASSWORD+x}" ]]; then
+				sudo mkdir -p "${OUT_DIR}" &> /dev/null || fail "could not create directory ${OUT_DIR}"
+			else
+				sudo -S mkdir -p "${OUT_DIR}" <<< "${PASSWORD}" &> /dev/null
+			fi
+			;;
+		*)
+			fail "cannot proceed without creating ${OUT_DIR} or specifying a writeable directory with '-i'"
+	esac
+}
+
 # Check that the environment supports the install.
 function check_env {
-	[[ ! "${BASH_VERSION}" ]] && fail "Please use bash instead"
+	[[ ! -z "${BASH_VERSION+x}" ]] || fail "Please use bash instead"
 
 	# Check $HOME/.local/bin and /usr/bin if /usr/local/bin doesn't exist.
 	if [[ "${OUT_DIR}" = "${DEFAULT_DIR}" && ! -d "${OUT_DIR}" ]]; then
@@ -109,12 +132,12 @@ function check_env {
 		elif [[ -d "${HOME}/.local/bin" ]]; then
 				OUT_DIR="${HOME}/.local/bin"
 			else
-				fail "could not find a valid output directory: $OUT_DIR /usr/bin ${HOME}/.local/bin"
+				fail "could not find a valid output directory: ${OUT_DIR} /usr/bin ${HOME}/.local/bin"
 		fi
 	fi
 
-	# Check that the output directory is writeable.
-	[[ -d "${OUT_DIR}" && -w "${OUT_DIR}" ]] || fail "cannot write to ${OUT_DIR}"
+	# Check that the output directory exists.
+	[[ -d "${OUT_DIR}" ]] || prompt_create_dir || fail "output directory ${OUT_DIR} does not exist"
 
 	# Check for needed utilities.
 	command -v find &> /dev/null || fail "find not installed"
@@ -267,7 +290,18 @@ function install {
 
 	#move into PATH or cwd
 	chmod +x "${TMP_DIR}/${TMP_BIN}" || fail "chmod +x failed"
-	mv "${TMP_DIR}/${TMP_BIN}" "${OUT_DIR}/kubectl-${PROG}" 2>/dev/null || fail "mv failed" #FINAL STEP!
+
+	if ! mv "${TMP_DIR}/${TMP_BIN}" "${OUT_DIR}/kubectl-${PROG}" &>/dev/null; then
+		if [[ -z "${PASSWORD+x}" ]]; then
+			if [[ -t 0 || -t /dev/stdin ]]; then
+				sudo mv "${TMP_DIR}/${TMP_BIN}" "${OUT_DIR}/kubectl-${PROG}" &> /dev/null || fail "move failed"
+			else
+				fail "output directory ${OUT_DIR} cannot be written to, no sudo password provided, and stdin cannot be read"
+			fi
+		else
+			sudo -S mv "${TMP_DIR}/${TMP_BIN}" "${OUT_DIR}/kubectl-${PROG}" &> /dev/null <<< "${PASSWORD}" || fail "move failed"
+		fi
+	fi
 	echo "{{ if .MoveToPath }}Installed at{{ else }}Downloaded to{{ end }} $OUT_DIR/kubectl-$PROG"
 }
 

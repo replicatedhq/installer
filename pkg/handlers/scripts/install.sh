@@ -1,116 +1,275 @@
 #!/bin/bash
-TMP_DIR="/tmp/tmpinstalldir"
-function cleanup {
-	echo rm -rf $TMP_DIR > /dev/null
+
+DEFAULT_DIR="/usr/local/bin"
+INSECURE="{{ .Insecure }}"
+OUT_DIR="{{ if .MoveToPath }}${DEFAULT_DIR}{{ else }}$(pwd){{ end }}"
+PROG="{{ .Program }}"
+RELEASE="{{ .Release }}"
+TMP_DIR=$(mktemp -d || mktemp -d -t /tmp)
+USER="{{ .User }}"
+
+function print_help {
+	echo "{{ .Program }} installer script."
+	echo ""
+	echo "USAGE:"
+	echo "   $(basename "$0") [OPTIONS]"
+	echo "   $(basename "$0") [OPTIONS] -i PATH"
+	echo "   $(basename "$0") [OPTIONS] -s PASSWORD"
+	echo ""
+	echo "ARGS:"
+	echo "   PASSWORD  A valid sudo password for the current running user"
+	echo "   PATH      A directory to install into"
+	echo ""
+	echo "OPTIONS:"
+	echo "   -h --help              print this help message"
+	echo "   -i --install <PATH>    use PATH as the install directory"
+	echo "   -s --sudo <PASSWORD>   use sudo with PASSWORD if needed"
 }
+
+# Parse the arguments. The "-" option is used to parse long options.
+while getopts ":hs:i:-:" optchar; do
+	case "${optchar}" in
+		h)
+			print_help
+			exit 0
+			;;
+		s)
+			PASSWORD="${OPTARG}"
+			;;
+		i)
+			OUT_DIR="${OPTARG}"
+			;;
+		-)
+			case "${OPTARG}" in
+				sudo)
+					OPTARG="${!OPTIND}" # expand the current OPTIND 
+					OPTIND=$(( $OPTIND + 1 )) # increment the option index
+					PASSWORD=${OPTARG}
+					;;
+				sudo=*)
+					OPTARG="${OPTARG#*=}" # match and delete from the beginning of OPTARG to "="
+					PASSWORD=${OPTARG}
+					;;
+				install)
+					OPTARG="${!OPTIND}"
+					OPTIND=$(( $OPTIND + 1 ))
+					OUT_DIR=${OPTARG}
+					;;
+				install=*)
+					OPTARG="${OPTARG#*=}"
+					OUT_DIR=${OPTARG}
+					;;
+				*)
+					echo "unknown option -${OPTARG}"
+					print_help
+					exit 1
+					;;
+				esac
+				;;
+		*)
+			echo "unknown option $opt $OPTARG"
+			print_help
+			exit 1
+			;;
+	esac
+done
+
+# Cleanup temporary files if they exist and return to the starting directory.
+# This is trapped on EXIT signals to ensure it is always called on failures.
+function cleanup {
+	popd &> /dev/null
+	if [[ -d $TMP_DIR ]]; then
+		rm -rf $TMP_DIR
+	fi
+}
+trap cleanup EXIT
+
+# Print a big error message.
 function fail {
-	cleanup
-	msg=$1
-	echo "============"
-	echo "Error: $msg" 1>&2
+	msg="!! Error: $1 !!"
+	len=${#msg}
+	border=$(printf "%*s\n" "$len" | tr " " "!")
+
+	echo ""
+	echo "$border"
+	echo "$msg" 1>&2
+	echo "$border"
+	echo ""
 	exit 1
 }
+
+# Check that the environment supports the install.
+function check_env {
+	[[ ! "${BASH_VERSION}" ]] && fail "Please use bash instead"
+
+	# Check $HOME/.local/bin and /usr/bin if /usr/local/bin doesn't exist.
+	if [[ "${OUT_DIR}" = "${DEFAULT_DIR}" && ! -d "${OUT_DIR}" ]]; then
+		if [[ -d "/usr/bin" ]]; then
+			OUT_DIR="/usr/bin"
+		elif [[ -d "${HOME}/.local/bin" ]]; then
+				OUT_DIR="${HOME}/.local/bin"
+			else
+				fail "could not find a valid output directory: $OUT_DIR /usr/bin ${HOME}/.local/bin"
+		fi
+	fi
+
+	# Check that the output directory is writeable.
+	[[ -d "${OUT_DIR}" && -w "${OUT_DIR}" ]] || fail "cannot write to ${OUT_DIR}"
+
+	# Check for needed utilities.
+	command -v find &> /dev/null || fail "find not installed"
+	command -v xargs &> /dev/null || fail "xargs not installed"
+	command -v sort &> /dev/null || fail "sort not installed"
+	command -v tail &> /dev/null || fail "tail not installed"
+	command -v cut &> /dev/null || fail "cut not installed"
+	command -v du &> /dev/null || fail "du not installed"
+
+	# Check for a download utility.
+	if command -v curl &> /dev/null; then
+		GET_PROG="curl"
+		if [[ ${INSECURE} = "true" ]]; then
+			GET_OPTS=("--insecure")
+		fi
+		GET_OPTS+=("--fail" "-#" "-L")
+	elif command -v wget &> /dev/null; then
+		GET_PROG="wget"
+		if [[ ${INSECURE} = "true" ]]; then
+			GET_OPTS=("--no-check-certificate")
+		fi
+		GET_OPTS+=("-qO-")
+	fi
+	[[ ! -z "${GET_PROG+x}" || ! -z "${GET_OPTS+x}" ]] || fail "curl and wget are not installed"
+
+	# Check the OS and architecture.
+	case $(uname -s) in
+		Darwin)
+			OS="darwin"
+			;;
+		Linux)
+			OS="linux"
+			;;
+		*)
+			fail "unsupported OS $(uname -s)"
+			;;
+	esac
+	[[ ! -z "${OS+x}" ]] || fail "could not determine the OS"
+
+	case $(uname -m) in
+		"amd64" | "x86_64")
+			ARCH="amd64"
+			;;
+		"arm64" | "aarch64")
+			ARCH="arm64"
+			;;
+		"arm")
+			ARCH="arm"
+			;;
+		"i386")
+			ARCH="386"
+			;;
+		*)
+			fail "unsupported architecture $(uname -m)"
+	esac
+	[[ ! -z "${ARCH+x}" ]] || fail "could not determine the architecture"
+
+	# Check for the current OS + arch combination in the available assets.
+	# NOTE: the case statements are built by the templating engine by ranging
+	#   over the set of assets and creating an OS_ARCH case that assigns that
+	#   asset's URL and file type.
+	case "${OS}_${ARCH}" in
+	  {{ range .Assets }}
+		{{ .OS }}_{{ .Arch }})
+			URL="{{ .URL }}"
+			FTYPE="{{ .Type }}"
+			;;
+		{{ end }}
+		*)
+			fail "No asset found for platform ${OS}-${ARCH}"
+			;;
+	esac
+	[[ ! -z "${URL+x}" || ! -z "${FTYPE+x}" ]] || fail "could not find the right download URL and type"
+
+	# Check that the assets can be extracted.
+	case "${FTYPE}" in
+		".gz")
+			command -v gzip &>/dev/null || fail "gzip is not installed"
+			;;
+		".tar.gz")
+			command -v tar &>/dev/null || fail "tar is not installed"
+			;;
+		".zip")
+			command -v unzip &>/dev/null || fail "zip is not installed"
+			;;
+		"")
+			;;
+		*)
+			fail "unsupported file type ${FTYPE}"
+	esac
+}
+
 function install {
-	#settings
-	USER="{{ .User }}"
-	PROG="{{ .Program }}"
-	MOVE="{{ .MoveToPath }}"
-	RELEASE="{{ .Release }}"
-	INSECURE="{{ .Insecure }}"
-	OUT_DIR="{{ if .MoveToPath }}/usr/local/bin{{ else }}$(pwd){{ end }}"
-	GH="https://github.com"
-	#bash check
-	[ ! "$BASH_VERSION" ] && fail "Please use bash instead"
-	[ ! -d $OUT_DIR ] && fail "output directory missing: $OUT_DIR"
-	#dependency check, assume we are a standard POISX machine
-	which find > /dev/null || fail "find not installed"
-	which xargs > /dev/null || fail "xargs not installed"
-	which sort > /dev/null || fail "sort not installed"
-	which tail > /dev/null || fail "tail not installed"
-	which cut > /dev/null || fail "cut not installed"
-	which du > /dev/null || fail "du not installed"
-	GET=""
-	if which curl > /dev/null; then
-		GET="curl"
-		if [[ $INSECURE = "true" ]]; then GET="$GET --insecure"; fi
-		GET="$GET --fail -# -L"
-	elif which wget > /dev/null; then
-		GET="wget"
-		if [[ $INSECURE = "true" ]]; then GET="$GET --no-check-certificate"; fi
-		GET="$GET -qO-"
-	else
-		fail "neither wget/curl are installed"
-	fi
-	#find OS #TODO BSDs and other posixs
-	case `uname -s` in
-	Darwin) OS="darwin";;
-	Linux) OS="linux";;
-	*) fail "unknown os: $(uname -s)";;
+	echo "Downloading ${USER}/${PROG} ${RELEASE} (${URL})..."
+
+	# Download and extract the binary to the temporary directory.
+	pushd $TMP_DIR &> /dev/null
+
+	case "${FTYPE}" in
+		".gz")
+			if [[ "${GET_PROG}" = "curl" ]]; then
+		    curl "${GET_OPTS[@]}" "${URL}" | gzip -d - > "${PROG}" || fail "download and extraction failed"
+			else
+			  wget "${GET_OPTS[@]}" "${URL}" | gzip -d - > "${PROG}" || fail "download and extraction failed"
+			fi
+			;;
+		".tar.gz")
+			if [[ "${GET_PROG}" = "curl" ]]; then
+			  curl "${GET_OPTS[@]}" "${URL}" | tar xzf - > "${PROG}" || fail "download and extraction failed"
+			else
+			  wget "${GET_OPTS[@]}" "${URL}" | tar xzf - > "${PROG}" || fail "download and extraction failed"
+			fi
+			;;
+		".zip")
+			tmp_file=$(basename $URL)
+			if [[ "${GET_PROG}" = "curl" ]]; then
+			  curl "${GET_OPTS[@]}" "${URL}" > "${tmp_file}" && unzip -o -qq "${tmp_file}" || fail "download and extraction failed"
+			else
+			  wget "${GET_OPTS[@]}" "${URL}" > "${tmp_file}" && unzip -o -qq "${tmp_file}" || fail "download and extraction failed"
+			fi
+			rm tmp_file
+			;;
+		"")
+			if [[ "${GET_PROG}" = "curl" ]]; then
+			  curl "${GET_OPTS[@]}" "${URL}" > "{{ .Program }}_${OS}_${ARCH}" || fail "download failed"
+			else
+			  wget "${GET_OPTS[@]}" "${URL}" > "{{ .Program }}_${OS}_${ARCH}" || fail "download failed"
+			fi
+			;;
+		*)
+			fail "unknown file type ${FTYPE}"
 	esac
-	#find ARCH
-	UNAME=`uname -m`
-	if [ "$UNAME" == "amd64" ] || [ "$UNAME" == "x86_64" ]; then
-		ARCH="amd64"
-	elif [ "$UNAME" == "arm64" ] || [ "$UNAME" == "aarch64" ]; then
-		ARCH="arm64"
-	elif [ "$UNAME" == "arm" ]; then
-		ARCH="arm"
-	elif [ "$UNAME" == "i386" ]; then
-		ARCH="386"
-	else
-		fail "unknown arch: $UNAME"
-	fi
-	#choose from asset list
-	URL=""
-	FTYPE=""
-	case "${OS}_${ARCH}" in{{ range .Assets }}
-	{{ .OS }}_{{ .Arch }})
-		URL="{{ .URL }}"
-		FTYPE="{{ .Type }}"
-		;;{{end}}
-	*) fail "No asset for platform ${OS}-${ARCH}";;
-	esac
-	#got URL! download it...
-	echo "{{ if .MoveToPath }}Installing{{ else }}Downloading{{ end }} $USER/$PROG $RELEASE ($URL)..."
-	#enter tempdir
-	mkdir -p $TMP_DIR
-	cd $TMP_DIR
-	if [[ $FTYPE = ".gz" ]]; then
-		which gzip > /dev/null || fail "gzip is not installed"
-		#gzipped binary
-		NAME="${PROG}_${OS}_${ARCH}.gz"
-		GZURL="$GH/releases/download/$RELEASE/$NAME"
-		#gz download!
-		bash -c "$GET $URL" | gzip -d - > $PROG || fail "download failed"
-	elif [[ $FTYPE = ".tar.gz" ]]; then
-		#check if archiver progs installed
-		which tar > /dev/null || fail "tar is not installed"
-		which gzip > /dev/null || fail "gzip is not installed"
-		bash -c "$GET $URL" | tar zxf - || fail "download failed"
-	elif [[ $FTYPE = ".zip" ]]; then
-		which unzip > /dev/null || fail "unzip is not installed"
-		bash -c "$GET $URL" > tmp.zip || fail "download failed"
-		unzip -o -qq tmp.zip || fail "unzip failed"
-		rm tmp.zip || fail "cleanup failed"
-	elif [[ $FTYPE = "" ]]; then
-		bash -c "$GET $URL" > "{{ .Program }}_${OS}_${ARCH}" || fail "download failed"
-	else
-		fail "unknown file type: $FTYPE"
-	fi
-	#search subtree largest file (bin)
+
+	echo "{{ if .MoveToPath }}Installing{{ else }}Moving{{ end }} to ${OUT_DIR}"
+
+	# BUG: this will fail on a payload with unrelated files larger than the target binary.
+	# TODO: will there ever be unrelated files in the payload? Why not grab the _only_ file?
 	TMP_BIN=$(find . -type f | xargs du | sort -n | tail -n 1 | cut -f 2)
-	if [ ! -f "$TMP_BIN" ]; then
+	if [ ! -f "${TMP_BIN}" ]; then
 		fail "could not find downloaded binary"
 	fi
+
 	#ensure its larger than 2MB
-	if [[ $(du -m $TMP_BIN | cut -f1) -lt 2 ]]; then
+	# BUG: this check relies on the current state of the go compiler and binary optimization tools.
+	if [[ $(du -m "${TMP_BIN}" | cut -f1) -lt 2 ]]; then
 		fail "resulting file is smaller than 2MB, not a go binary"
 	fi
+
+	popd &> /dev/null
+
 	#move into PATH or cwd
-	chmod +x $TMP_BIN || fail "chmod +x failed"
-	mv $TMP_BIN $OUT_DIR/kubectl-$PROG 2>/dev/null || sudo mv $TMP_BIN $OUT_DIR/kubectl-$PROG || fail "mv failed" #FINAL STEP!
+	chmod +x "${TMP_DIR}/${TMP_BIN}" || fail "chmod +x failed"
+	mv "${TMP_DIR}/${TMP_BIN}" "${OUT_DIR}/kubectl-${PROG}" 2>/dev/null || fail "mv failed" #FINAL STEP!
 	echo "{{ if .MoveToPath }}Installed at{{ else }}Downloaded to{{ end }} $OUT_DIR/kubectl-$PROG"
-	#done
-	cleanup
 }
+
+check_env
 install

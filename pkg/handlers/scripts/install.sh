@@ -100,13 +100,18 @@ function fail {
 
 # Prompt the user if they would like to create the output directory.
 function prompt_create_dir {
-	if [[ ! -t 0 && ! -t /dev/stdin ]]; then
+	if [[ -t 0 || -t /dev/stdin ]]; then
+		INPUT="/dev/stdin"
+	elif [[ -r /dev/tty ]]; then
+		INPUT="/dev/tty"
+	else
 		return false
 	fi
+	[[ ! -z "${INPUT+x}" ]] || return false
 
 	echo ""
 	echo "The output directory ${OUT_DIR} does not exist, should it be created with sudo?"
-	read -p "Y or N? " -n 1 -r REPLY
+	read -p "Y or N? " -n 1 -r REPLY < "${INPUT}"
 	echo ""
 	case "${REPLY}" in
 		y|Y)
@@ -138,6 +143,14 @@ function check_env {
 
 	# Check that the output directory exists.
 	[[ -d "${OUT_DIR}" ]] || prompt_create_dir || fail "output directory ${OUT_DIR} does not exist"
+	if [[ ! -w "${OUT_DIR}" ]]; then
+		echo ""
+		echo "The output directory ${OUT_DIR} cannot be written to and sudo will be used to move the files."
+		echo ""
+		echo "Use the -i <PATH> option to specify a different install directory or the -s <PASSWORD> option"
+		echo "to specify a sudo password."
+		echo ""
+	fi
 
 	# Check for needed utilities.
 	command -v find &> /dev/null || fail "find not installed"
@@ -293,7 +306,7 @@ function install {
 
 	if ! mv "${TMP_DIR}/${TMP_BIN}" "${OUT_DIR}/kubectl-${PROG}" &>/dev/null; then
 		if [[ -z "${PASSWORD+x}" ]]; then
-			if [[ -t 0 || -t /dev/stdin ]]; then
+			if [[ -t 0 || -t /dev/stdin || -r /dev/tty ]]; then
 				sudo mv "${TMP_DIR}/${TMP_BIN}" "${OUT_DIR}/kubectl-${PROG}" &> /dev/null || fail "move failed"
 			else
 				fail "output directory ${OUT_DIR} cannot be written to, no sudo password provided, and stdin cannot be read"

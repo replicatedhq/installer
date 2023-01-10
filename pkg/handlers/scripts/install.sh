@@ -1,5 +1,24 @@
 #!/bin/bash
 
+# Installer script for {{ .Program }} version {{ .Release }}.
+#
+# This script will verify that the environment is suitable for installation before downloading
+# and installing {{ .Program }}.
+#
+# This script can be configured by either setting environment variables or using argument flags,
+# but the command line arguments take precedence over the environment variables.
+#
+# Environment variables:
+# ----------------------
+#   REPLICATED_INSTALL_PASSWORD  password to use for sudo when installing non-interactively and
+#                                without permission to write to the installation directory.
+#
+#   REPLICATED_INSTALL_PATH      alternative installation directory to use.
+#
+# Command line arguments:
+# -----------------------
+#   -i, --install  alternative installation directory to use.
+
 DEFAULT_DIR="/usr/local/bin"
 INSECURE="{{ .Insecure }}"
 OUT_DIR="{{ if .MoveToPath }}${DEFAULT_DIR}{{ else }}$(pwd){{ end }}"
@@ -7,6 +26,15 @@ PROG="{{ .Program }}"
 RELEASE="{{ .Release }}"
 TMP_DIR=$(mktemp -d || mktemp -d -t /tmp)
 USER="{{ .User }}"
+
+# Check for and use any environment variables.
+if [[ ! -z "${REPLICATED_INSTALL_PASSWORD+x}" ]]; then
+	PASSWORD=${REPLICATED_INSTALL_PASSWORD}
+fi
+
+if [[ ! -z "${REPLICATED_INSTALL_PATH+x}" ]]; then
+	OUT_DIR=${REPLICATED_INSTALL_PATH}
+fi
 
 function print_help {
 	echo "{{ .Program }} installer script."
@@ -27,29 +55,17 @@ function print_help {
 }
 
 # Parse the arguments. The "-" option is used to parse long options.
-while getopts ":hs:i:-:" optchar; do
+while getopts ":hi:-:" optchar; do
 	case "${optchar}" in
 		h)
 			print_help
 			exit 0
-			;;
-		s)
-			PASSWORD="${OPTARG}"
 			;;
 		i)
 			OUT_DIR="${OPTARG}"
 			;;
 		-)
 			case "${OPTARG}" in
-				sudo)
-					OPTARG="${!OPTIND}" # expand the current OPTIND 
-					OPTIND=$(( $OPTIND + 1 )) # increment the option index
-					PASSWORD=${OPTARG}
-					;;
-				sudo=*)
-					OPTARG="${OPTARG#*=}" # match and delete from the beginning of OPTARG to "="
-					PASSWORD=${OPTARG}
-					;;
 				install)
 					OPTARG="${!OPTIND}"
 					OPTIND=$(( $OPTIND + 1 ))
@@ -145,10 +161,17 @@ function check_env {
 	[[ -d "${OUT_DIR}" ]] || prompt_create_dir || fail "output directory ${OUT_DIR} does not exist"
 	if [[ ! -w "${OUT_DIR}" ]]; then
 		echo ""
-		echo "The output directory ${OUT_DIR} cannot be written to and sudo will be used to move the files."
+		echo "The output directory ${OUT_DIR} cannot be written to and sudo will be required for installation."
 		echo ""
-		echo "Use the -i <PATH> option to specify a different install directory or the -s <PASSWORD> option"
-		echo "to specify a sudo password."
+		echo "Another installation directory can be used by setting the REPLICATED_INSTALL_PATH variable or"
+		echo "running this script with the -i flag."
+		echo "  export REPLICATED_INSTALL_PATH=/alternative/path"
+		echo "  ./$(basename "$0") -i /alternative/path"
+		echo "  ./$(basename "$0") --install /alternative/path"
+		echo ""
+		echo "If this installation script needs to be run non-interactively with sudo, the password can"
+		echo "be specified with the REPLICATED_INSTALL_PASSWORD variable."
+		echo "  export REPLICATED_INSTALL_PASSWORD=sudo_password"
 		echo ""
 	fi
 

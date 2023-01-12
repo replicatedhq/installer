@@ -54,11 +54,47 @@ function print_help {
 	echo "   -s --sudo <PASSWORD>   use sudo with PASSWORD if needed"
 }
 
+function print_manual_instructions {
+	echo ""
+	echo "To install {{ .Program }} manually, follow these steps:"
+
+	if [[ -z "${URL+x}" ]]; then
+		echo "  * Download the appropriate release from https://github.com/replicatedhq/kots/releases"
+	else
+		if [[ -z "${GET_PROG+x}" ]]; then
+			echo "  * Download ${URL}"
+		else
+			echo "  * Download {{ .Program }} with: ${GET_PROG} ${GET_OPTS} ${URL}"
+		fi
+	fi
+
+	case "${FTYPE}" in
+		".gz")
+			echo "  * Extract the archive with: gzip -d $(basename ${URL})"
+			;;
+		".tar.gz")
+			echo "  * Extract the archive with: tar xvf $(basename ${URL})"
+			;;
+		".zip")
+			echo "  * Extract the archive with: unzip $(basename ${URL})"
+			;;
+		"")
+			;;
+		*)
+			echo "  * Extract the downloaded release"
+	esac
+
+	echo "  * Move the file to the install directory: mv kubectl-{{ .Program }} ${OUTDIR}"
+	echo "  * Sudo may be required, the install directory can also be any directory in the PATH"
+	echo ""
+}
+
 # Parse the arguments. The "-" option is used to parse long options.
 while getopts ":hi:-:" optchar; do
 	case "${optchar}" in
 		h)
 			print_help
+			print_manual_instructions
 			exit 0
 			;;
 		i)
@@ -110,7 +146,7 @@ function fail {
 	echo "$border"
 	echo "$msg" 1>&2
 	echo "$border"
-	echo ""
+	print_manual_instructions
 	exit 1
 }
 
@@ -145,59 +181,6 @@ function prompt_create_dir {
 # Check that the environment supports the install.
 function check_env {
 	[[ ! -z "${BASH_VERSION+x}" ]] || fail "Please use bash instead"
-
-	# Check $HOME/.local/bin and /usr/bin if /usr/local/bin doesn't exist.
-	if [[ "${OUT_DIR}" = "${DEFAULT_DIR}" && ! -d "${OUT_DIR}" ]]; then
-		if [[ -d "/usr/bin" ]]; then
-			OUT_DIR="/usr/bin"
-		elif [[ -d "${HOME}/.local/bin" ]]; then
-				OUT_DIR="${HOME}/.local/bin"
-			else
-				fail "could not find a valid output directory: ${OUT_DIR} /usr/bin ${HOME}/.local/bin"
-		fi
-	fi
-
-	# Check that the output directory exists.
-	[[ -d "${OUT_DIR}" ]] || prompt_create_dir || fail "output directory ${OUT_DIR} does not exist"
-	if [[ ! -w "${OUT_DIR}" ]]; then
-		echo ""
-		echo "The output directory ${OUT_DIR} cannot be written to and sudo will be required for installation."
-		echo ""
-		echo "Another installation directory can be used by setting the REPLICATED_INSTALL_PATH variable or"
-		echo "running this script with the -i flag."
-		echo "  export REPLICATED_INSTALL_PATH=/alternative/path"
-		echo "  ./$(basename "$0") -i /alternative/path"
-		echo "  ./$(basename "$0") --install /alternative/path"
-		echo ""
-		echo "If this installation script needs to be run non-interactively with sudo, the password can"
-		echo "be specified with the REPLICATED_INSTALL_PASSWORD variable."
-		echo "  export REPLICATED_INSTALL_PASSWORD=sudo_password"
-		echo ""
-	fi
-
-	# Check for needed utilities.
-	command -v find &> /dev/null || fail "find not installed"
-	command -v xargs &> /dev/null || fail "xargs not installed"
-	command -v sort &> /dev/null || fail "sort not installed"
-	command -v tail &> /dev/null || fail "tail not installed"
-	command -v cut &> /dev/null || fail "cut not installed"
-	command -v du &> /dev/null || fail "du not installed"
-
-	# Check for a download utility.
-	if command -v curl &> /dev/null; then
-		GET_PROG="curl"
-		if [[ ${INSECURE} = "true" ]]; then
-			GET_OPTS=("--insecure")
-		fi
-		GET_OPTS+=("--fail" "-#" "-L")
-	elif command -v wget &> /dev/null; then
-		GET_PROG="wget"
-		if [[ ${INSECURE} = "true" ]]; then
-			GET_OPTS=("--no-check-certificate")
-		fi
-		GET_OPTS+=("-qO-")
-	fi
-	[[ ! -z "${GET_PROG+x}" || ! -z "${GET_OPTS+x}" ]] || fail "curl and wget are not installed"
 
 	# Check the OS and architecture.
 	case $(uname -s) in
@@ -246,7 +229,31 @@ function check_env {
 			fail "No asset found for platform ${OS}-${ARCH}"
 			;;
 	esac
-	[[ ! -z "${URL+x}" || ! -z "${FTYPE+x}" ]] || fail "could not find the right download URL and type"
+	[[ ! -z "${URL+x}" || ! -z "${FTYPE+x}" ]] || fail "could not find a valid release URL for ${OS} ${ARCH}"
+
+	# Check for a download utility.
+	if command -v curl &> /dev/null; then
+		GET_PROG="curl"
+		if [[ ${INSECURE} = "true" ]]; then
+			GET_OPTS=("--insecure")
+		fi
+		GET_OPTS+=("--fail" "-#" "-L")
+	elif command -v wget &> /dev/null; then
+		GET_PROG="wget"
+		if [[ ${INSECURE} = "true" ]]; then
+			GET_OPTS=("--no-check-certificate")
+		fi
+		GET_OPTS+=("-qO-")
+	fi
+	[[ ! -z "${GET_PROG+x}" || ! -z "${GET_OPTS+x}" ]] || fail "curl or wget are not installed"
+
+	# Check for needed utilities.
+	command -v find &> /dev/null || fail "find not installed"
+	command -v xargs &> /dev/null || fail "xargs not installed"
+	command -v sort &> /dev/null || fail "sort not installed"
+	command -v tail &> /dev/null || fail "tail not installed"
+	command -v cut &> /dev/null || fail "cut not installed"
+	command -v du &> /dev/null || fail "du not installed"
 
 	# Check that the assets can be extracted.
 	case "${FTYPE}" in
@@ -264,6 +271,36 @@ function check_env {
 		*)
 			fail "unsupported file type ${FTYPE}"
 	esac
+
+	# Check $HOME/.local/bin and /usr/bin if /usr/local/bin doesn't exist.
+	if [[ "${OUT_DIR}" = "${DEFAULT_DIR}" && ! -d "${OUT_DIR}" ]]; then
+		if [[ -d "/usr/bin" ]]; then
+			OUT_DIR="/usr/bin"
+		elif [[ -d "${HOME}/.local/bin" ]]; then
+				OUT_DIR="${HOME}/.local/bin"
+			else
+				fail "could not find a valid output directory: ${OUT_DIR} /usr/bin ${HOME}/.local/bin"
+		fi
+	fi
+
+	# Check that the output directory exists.
+	[[ -d "${OUT_DIR}" ]] || prompt_create_dir || fail "output directory ${OUT_DIR} does not exist"
+	if [[ ! -w "${OUT_DIR}" ]]; then
+		echo ""
+		echo "The output directory ${OUT_DIR} cannot be written to and sudo will be required for installation."
+		echo ""
+		echo "Another installation directory can be used by setting the REPLICATED_INSTALL_PATH variable or"
+		echo "running this script with the -i flag."
+		echo "  export REPLICATED_INSTALL_PATH=/alternative/path"
+		echo "  ./$(basename "$0") -i /alternative/path"
+		echo "  ./$(basename "$0") --install /alternative/path"
+		echo ""
+		echo "If this installation script needs to be run non-interactively with sudo, the password can"
+		echo "be specified with the REPLICATED_INSTALL_PASSWORD variable."
+		echo "  export REPLICATED_INSTALL_PASSWORD=sudo_password"
+		print_manual_instructions
+	fi
+
 }
 
 function install {

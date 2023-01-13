@@ -103,12 +103,12 @@ while getopts ":hi:s-:" optchar; do
 				install)
 					OPTARG="${!OPTIND}"
 					OPTIND=$(( $OPTIND + 1 ))
-					OUT_DIR=${OPTARG}
+					OUT_DIR=${OPTARG/#~/${HOME}}
 					;;
 				install=*)
 					OPTARG="${OPTARG#*=}"
 					OPTIND=$(( $OPTIND + 1 ))
-					OUT_DIR=${OPTARG}
+					OUT_DIR=${OPTARG/#~/${HOME}}
 					;;
 				sudo)
 					OPTARG="${!OPTIND}"

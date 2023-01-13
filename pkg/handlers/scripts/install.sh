@@ -171,7 +171,7 @@ function prompt_install_dir {
 	echo "Please provide the full path to an installation directory that can be written to. If none"
 	echo "is provided in ${READ_TIMEOUT} seconds, then ${DEFAULT_DIR} will be used."
 	echo ""
-	read -p "installation directory: " -t ${READ_TIMEOUT} -r REPLY < "${INPUT}"
+	read -p "installation directory [${DEFAULT_DIR}]: " -t ${READ_TIMEOUT} -r REPLY < "${INPUT}"
 	echo ""
 
 	if [[ -z "${REPLY:+x}" ]]; then

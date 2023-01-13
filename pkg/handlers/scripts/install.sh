@@ -10,30 +10,30 @@
 #
 # Environment variables:
 # ----------------------
-#   REPLICATED_INSTALL_PASSWORD  password to use for sudo when installing non-interactively and
-#                                without permission to write to the installation directory.
+#   REPL_USE_SUDO          set this to any value to use sudo when writing to the installation directory.
 #
-#   REPLICATED_INSTALL_PATH      alternative installation directory to use.
+#   REPL_INSTALL_PATH      alternative installation directory to use.
 #
 # Command line arguments:
 # -----------------------
 #   -i, --install  alternative installation directory to use.
+#   -s, --sudo     use sudo when writing to the installation directory.
 
+READ_TIMEOUT=15
 DEFAULT_DIR="/usr/local/bin"
 INSECURE="{{ .Insecure }}"
-OUT_DIR="{{ if .MoveToPath }}${DEFAULT_DIR}{{ else }}$(pwd){{ end }}"
 PROG="{{ .Program }}"
 RELEASE="{{ .Release }}"
-TMP_DIR=$(mktemp -d || mktemp -d -t /tmp)
+TMP_DIR=$(mktemp -d -t replicated-XXXXXX)
 USER="{{ .User }}"
 
 # Check for and use any environment variables.
-if [[ ! -z "${REPLICATED_INSTALL_PASSWORD+x}" ]]; then
-	PASSWORD=${REPLICATED_INSTALL_PASSWORD}
+if [[ ! -z "${REPL_INSTALL_PATH:+x}" ]]; then
+	OUT_DIR="${REPL_INSTALL_PATH/#~/${HOME}}"
 fi
 
-if [[ ! -z "${REPLICATED_INSTALL_PATH+x}" ]]; then
-	OUT_DIR=${REPLICATED_INSTALL_PATH}
+if [[ ! -z "${REPL_USE_SUDO:+x}" ]]; then
+	USE_SUDO=1
 fi
 
 function print_help {
@@ -42,16 +42,15 @@ function print_help {
 	echo "USAGE:"
 	echo "   $(basename "$0") [OPTIONS]"
 	echo "   $(basename "$0") [OPTIONS] -i PATH"
-	echo "   $(basename "$0") [OPTIONS] -s PASSWORD"
+	echo "   $(basename "$0") [OPTIONS] -s"
 	echo ""
 	echo "ARGS:"
-	echo "   PASSWORD  A valid sudo password for the current running user"
 	echo "   PATH      A directory to install into"
 	echo ""
 	echo "OPTIONS:"
 	echo "   -h --help              print this help message"
 	echo "   -i --install <PATH>    use PATH as the install directory"
-	echo "   -s --sudo <PASSWORD>   use sudo with PASSWORD if needed"
+	echo "   -s --sudo              use sudo to install (interactive)"
 }
 
 function print_manual_instructions {
@@ -61,11 +60,7 @@ function print_manual_instructions {
 	if [[ -z "${URL+x}" ]]; then
 		echo "  * Download the appropriate release from https://github.com/replicatedhq/kots/releases"
 	else
-		if [[ -z "${GET_PROG+x}" ]]; then
-			echo "  * Download ${URL}"
-		else
-			echo "  * Download {{ .Program }} with: ${GET_PROG} ${GET_OPTS} ${URL}"
-		fi
+		echo "  * Download {{ .Program }} with: curl -O ${URL}"
 	fi
 
 	case "${FTYPE}" in
@@ -84,13 +79,13 @@ function print_manual_instructions {
 			echo "  * Extract the downloaded release"
 	esac
 
-	echo "  * Move the file to the install directory: mv kubectl-{{ .Program }} ${OUTDIR}"
+	echo "  * Move and rename the file to a directory in the PATH: mv {{ .Program }} /install/path/kubectl-{{ .Program }}"
 	echo "  * Sudo may be required, the install directory can also be any directory in the PATH"
 	echo ""
 }
 
 # Parse the arguments. The "-" option is used to parse long options.
-while getopts ":hi:-:" optchar; do
+while getopts ":hi:s-:" optchar; do
 	case "${optchar}" in
 		h)
 			print_help
@@ -99,6 +94,9 @@ while getopts ":hi:-:" optchar; do
 			;;
 		i)
 			OUT_DIR="${OPTARG}"
+			;;
+		s)
+			USE_SUDO=1
 			;;
 		-)
 			case "${OPTARG}" in
@@ -109,7 +107,13 @@ while getopts ":hi:-:" optchar; do
 					;;
 				install=*)
 					OPTARG="${OPTARG#*=}"
+					OPTIND=$(( $OPTIND + 1 ))
 					OUT_DIR=${OPTARG}
+					;;
+				sudo)
+					OPTARG="${!OPTIND}"
+					OPTIND=$(( $OPTIND + 1 ))
+					USE_SUDO=1
 					;;
 				*)
 					echo "unknown option -${OPTARG}"
@@ -139,7 +143,7 @@ trap cleanup EXIT
 # Print a big error message.
 function fail {
 	msg="!! Error: $1 !!"
-	len=${#msg}
+	len="${#msg}"
 	border=$(printf "%*s\n" "$len" | tr " " "!")
 
 	echo ""
@@ -151,35 +155,37 @@ function fail {
 }
 
 # Prompt the user if they would like to create the output directory.
-function prompt_create_dir {
+function prompt_install_dir {
 	if [[ -t 0 || -t /dev/stdin ]]; then
 		INPUT="/dev/stdin"
 	elif [[ -r /dev/tty ]]; then
 		INPUT="/dev/tty"
-	else
-		return false
 	fi
-	[[ ! -z "${INPUT+x}" ]] || return false
+	if [[ -z "${INPUT+x}" ]]; then
+	  echo "Unable to prompt user for installation directory, using ${DEFAULT_DIR}"
+		OUT_DIR="${DEFAULT_DIR}"
+		return
+	fi
 
 	echo ""
-	echo "The output directory ${OUT_DIR} does not exist, should it be created with sudo?"
-	read -p "Y or N? " -n 1 -r REPLY < "${INPUT}"
+	echo "Please provide the full path to an installation directory that can be written to. If none"
+	echo "is provided in ${READ_TIMEOUT} seconds, then ${DEFAULT_DIR} will be used."
 	echo ""
-	case "${REPLY}" in
-		y|Y)
-			if [[ -z "${PASSWORD+x}" ]]; then
-				sudo mkdir -p "${OUT_DIR}" &> /dev/null || fail "could not create directory ${OUT_DIR}"
-			else
-				sudo -S mkdir -p "${OUT_DIR}" <<< "${PASSWORD}" &> /dev/null
-			fi
-			;;
-		*)
-			fail "cannot proceed without creating ${OUT_DIR} or specifying a writeable directory with '-i'"
-	esac
+	read -p "installation directory: " -t ${READ_TIMEOUT} -r REPLY < "${INPUT}"
+	echo ""
+
+	if [[ -z "${REPLY:+x}" ]]; then
+		echo "No directory given, the default of ${DEFAULT_DIR} will be used"
+		OUT_DIR="${DEFAULT_DIR}"
+		return
+	fi
+
+	OUT_DIR="${REPLY/#~/${HOME}}"
 }
 
 # Check that the environment supports the install.
 function check_env {
+  # Check that we're running bash
 	[[ ! -z "${BASH_VERSION+x}" ]] || fail "Please use bash instead"
 
 	# Check the OS and architecture.
@@ -231,23 +237,8 @@ function check_env {
 	esac
 	[[ ! -z "${URL+x}" || ! -z "${FTYPE+x}" ]] || fail "could not find a valid release URL for ${OS} ${ARCH}"
 
-	# Check for a download utility.
-	if command -v curl &> /dev/null; then
-		GET_PROG="curl"
-		if [[ ${INSECURE} = "true" ]]; then
-			GET_OPTS=("--insecure")
-		fi
-		GET_OPTS+=("--fail" "-#" "-L")
-	elif command -v wget &> /dev/null; then
-		GET_PROG="wget"
-		if [[ ${INSECURE} = "true" ]]; then
-			GET_OPTS=("--no-check-certificate")
-		fi
-		GET_OPTS+=("-qO-")
-	fi
-	[[ ! -z "${GET_PROG+x}" || ! -z "${GET_OPTS+x}" ]] || fail "curl or wget are not installed"
-
 	# Check for needed utilities.
+	command -v curl &> /dev/null || fail "curl not installed"
 	command -v find &> /dev/null || fail "find not installed"
 	command -v xargs &> /dev/null || fail "xargs not installed"
 	command -v sort &> /dev/null || fail "sort not installed"
@@ -272,35 +263,34 @@ function check_env {
 			fail "unsupported file type ${FTYPE}"
 	esac
 
-	# Check $HOME/.local/bin and /usr/bin if /usr/local/bin doesn't exist.
-	if [[ "${OUT_DIR}" = "${DEFAULT_DIR}" && ! -d "${OUT_DIR}" ]]; then
-		if [[ -d "/usr/bin" ]]; then
-			OUT_DIR="/usr/bin"
-		elif [[ -d "${HOME}/.local/bin" ]]; then
-				OUT_DIR="${HOME}/.local/bin"
-			else
-				fail "could not find a valid output directory: ${OUT_DIR} /usr/bin ${HOME}/.local/bin"
+	# Check if the install directory needs to be prompted for and exists.
+	[[ ! -z "${OUT_DIR:+x}" ]] || prompt_install_dir
+
+	if [[ ! -d "${OUT_DIR}" ]]; then
+		if [[ ! -z "${USE_SUDO+x}" ]]; then
+			sudo mkdir -p "${OUT_DIR}" &> /dev/null || true
+		else
+			mkdir -p "${OUT_DIR}" &> /dev/null || true
 		fi
 	fi
 
-	# Check that the output directory exists.
-	[[ -d "${OUT_DIR}" ]] || prompt_create_dir || fail "output directory ${OUT_DIR} does not exist"
-	if [[ ! -w "${OUT_DIR}" ]]; then
+	if [[ ! -w "${OUT_DIR}" && -z "${USE_SUDO+x}" ]]; then
 		echo ""
-		echo "The output directory ${OUT_DIR} cannot be written to and sudo will be required for installation."
+		echo "The installation directory ${OUT_DIR} is not writeable by this user, and installation has failed."
 		echo ""
-		echo "Another installation directory can be used by setting the REPLICATED_INSTALL_PATH variable or"
-		echo "running this script with the -i flag."
-		echo "  export REPLICATED_INSTALL_PATH=/alternative/path"
-		echo "  ./$(basename "$0") -i /alternative/path"
-		echo "  ./$(basename "$0") --install /alternative/path"
+		echo "To fix this, do one of the following:"
+		echo "  * Set the environment variable REPL_INSTALL_PATH to a directory in the PATH that can"
+		echo "    be written to and re-run this script"
+		echo "  * Set the environment variable REPL_USE_SUDO to any value and re-run this script. Keep"
+		echo "    in mind this script will block waiting on sudo."
+		echo "  * Re-run this script with the -i or --install flag set to a directory in the PATH that"
+		echo "    can be written to. 'curl http://kots.io | bash -s --install /new/path'"
+		echo "  * Re-run this script with the -s or --sudo flag. Keep in mind that this script will"
+		echo "    block waiting on sudo. 'curl http://kots.io | bash -s --sudo'"
+		echo "  * Re-run this script with sudo. 'curl http://kots.io | sudo bash'"
 		echo ""
-		echo "If this installation script needs to be run non-interactively with sudo, the password can"
-		echo "be specified with the REPLICATED_INSTALL_PASSWORD variable."
-		echo "  export REPLICATED_INSTALL_PASSWORD=sudo_password"
-		print_manual_instructions
+		fail "cannot write to the installation directory ${OUT_DIR}"
 	fi
-
 }
 
 function install {
@@ -309,42 +299,28 @@ function install {
 	# Download and extract the binary to the temporary directory.
 	pushd $TMP_DIR &> /dev/null
 
+	local get_opts=("${INSECURE:+--insecure}" "--fail" "-#" "-L")
+
 	case "${FTYPE}" in
 		".gz")
-			if [[ "${GET_PROG}" = "curl" ]]; then
-		    curl "${GET_OPTS[@]}" "${URL}" | gzip -d - > "${PROG}" || fail "download and extraction failed"
-			else
-			  wget "${GET_OPTS[@]}" "${URL}" | gzip -d - > "${PROG}" || fail "download and extraction failed"
-			fi
+			curl "${get_opts[@]}" "${URL}" | gzip -d - > "${PROG}" || fail "download and extraction failed"
 			;;
 		".tar.gz")
-			if [[ "${GET_PROG}" = "curl" ]]; then
-			  curl "${GET_OPTS[@]}" "${URL}" | tar xzf - > "${PROG}" || fail "download and extraction failed"
-			else
-			  wget "${GET_OPTS[@]}" "${URL}" | tar xzf - > "${PROG}" || fail "download and extraction failed"
-			fi
+			curl "${get_opts[@]}" "${URL}" | tar xzf - > "${PROG}" || fail "download and extraction failed"
 			;;
 		".zip")
-			tmp_file=$(basename $URL)
-			if [[ "${GET_PROG}" = "curl" ]]; then
-			  curl "${GET_OPTS[@]}" "${URL}" > "${tmp_file}" && unzip -o -qq "${tmp_file}" || fail "download and extraction failed"
-			else
-			  wget "${GET_OPTS[@]}" "${URL}" > "${tmp_file}" && unzip -o -qq "${tmp_file}" || fail "download and extraction failed"
-			fi
-			rm tmp_file
+			local tmp_file=$(basename $URL)
+		  curl "${get_opts[@]}" "${URL}" > "${tmp_file}" && unzip -o -qq "${tmp_file}" || fail "download and extraction failed"
+			rm "${tmp_file}"
 			;;
 		"")
-			if [[ "${GET_PROG}" = "curl" ]]; then
-			  curl "${GET_OPTS[@]}" "${URL}" > "{{ .Program }}_${OS}_${ARCH}" || fail "download failed"
-			else
-			  wget "${GET_OPTS[@]}" "${URL}" > "{{ .Program }}_${OS}_${ARCH}" || fail "download failed"
-			fi
+		  curl "${get_opts[@]}" "${URL}" > "{{ .Program }}_${OS}_${ARCH}" || fail "download failed"
 			;;
 		*)
 			fail "unknown file type ${FTYPE}"
 	esac
 
-	echo "{{ if .MoveToPath }}Installing{{ else }}Moving{{ end }} to ${OUT_DIR}"
+	echo "Installing to ${OUT_DIR}"
 
 	# BUG: this will fail on a payload with unrelated files larger than the target binary.
 	# TODO: will there ever be unrelated files in the payload? Why not grab the _only_ file?
@@ -364,18 +340,13 @@ function install {
 	#move into PATH or cwd
 	chmod +x "${TMP_DIR}/${TMP_BIN}" || fail "chmod +x failed"
 
-	if ! mv "${TMP_DIR}/${TMP_BIN}" "${OUT_DIR}/kubectl-${PROG}" &>/dev/null; then
-		if [[ -z "${PASSWORD+x}" ]]; then
-			if [[ -t 0 || -t /dev/stdin || -r /dev/tty ]]; then
-				sudo mv "${TMP_DIR}/${TMP_BIN}" "${OUT_DIR}/kubectl-${PROG}" &> /dev/null || fail "move failed"
-			else
-				fail "output directory ${OUT_DIR} cannot be written to, no sudo password provided, and stdin cannot be read"
-			fi
-		else
-			sudo -S mv "${TMP_DIR}/${TMP_BIN}" "${OUT_DIR}/kubectl-${PROG}" &> /dev/null <<< "${PASSWORD}" || fail "move failed"
-		fi
+	if [[ -z "${USE_SUDO+x}" ]]; then
+		mv "${TMP_DIR}/${TMP_BIN}" "${OUT_DIR}/kubectl-${PROG}" &> /dev/null || fail "installing to ${OUT_DIR} failed"
+	else
+		sudo mv "${TMP_DIR}/${TMP_BIN}" "${OUT_DIR}/kubectl-${PROG}" &> /dev/null || fail "installing to ${OUT_DIR} failed"
 	fi
-	echo "{{ if .MoveToPath }}Installed at{{ else }}Downloaded to{{ end }} $OUT_DIR/kubectl-$PROG"
+
+	echo "Installed at $OUT_DIR/kubectl-$PROG"
 }
 
 check_env

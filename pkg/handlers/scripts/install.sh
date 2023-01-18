@@ -264,7 +264,9 @@ function check_env {
 	esac
 
 	# Check if the install directory needs to be prompted for and exists.
-	[[ ! -z "${OUT_DIR:+x}" ]] || prompt_install_dir
+	if [[ -z "${OUT_DIR:+x}" ]]; then
+		 prompt_install_dir
+	fi
 
 	if [[ ! -d "${OUT_DIR}" ]]; then
 		if [[ ! -z "${USE_SUDO+x}" ]]; then
@@ -322,15 +324,12 @@ function install {
 
 	echo "Installing to ${OUT_DIR}"
 
-	# BUG: this will fail on a payload with unrelated files larger than the target binary.
-	# TODO: will there ever be unrelated files in the payload? Why not grab the _only_ file?
 	TMP_BIN=$(find . -type f | xargs du | sort -n | tail -n 1 | cut -f 2)
 	if [ ! -f "${TMP_BIN}" ]; then
 		fail "could not find downloaded binary"
 	fi
 
 	#ensure its larger than 2MB
-	# BUG: this check relies on the current state of the go compiler and binary optimization tools.
 	if [[ $(du -m "${TMP_BIN}" | cut -f1) -lt 2 ]]; then
 		fail "resulting file is smaller than 2MB, not a go binary"
 	fi

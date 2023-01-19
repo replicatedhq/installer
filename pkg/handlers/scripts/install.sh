@@ -14,10 +14,6 @@
 #
 #   REPL_INSTALL_PATH      alternative installation directory to use.
 #
-# Command line arguments:
-# -----------------------
-#   -i, --install  alternative installation directory to use.
-#   --sudo     use sudo when writing to the installation directory.
 
 READ_TIMEOUT=15
 DEFAULT_DIR="/usr/local/bin"
@@ -27,33 +23,11 @@ RELEASE="{{ .Release }}"
 TMP_DIR=$(mktemp -d -t replicated-XXXXXX)
 USER="{{ .User }}"
 
-# Check for and use any environment variables.
-if [[ ! -z "${REPL_INSTALL_PATH:+x}" ]]; then
-	OUT_DIR="${REPL_INSTALL_PATH/#~/${HOME}}"
-fi
-
-if [[ ! -z "${REPL_USE_SUDO:+x}" ]]; then
-	USE_SUDO=1
-fi
-
-function print_help {
-	echo "{{ .Program }} installer script."
-	echo ""
-	echo "USAGE:"
-	echo "   $(basename "$0") [OPTIONS]"
-	echo "   $(basename "$0") [OPTIONS] -i PATH"
-	echo "   $(basename "$0") [OPTIONS] --sudo"
-	echo ""
-	echo "ARGS:"
-	echo "   PATH      A directory to install into"
-	echo ""
-	echo "OPTIONS:"
-	echo "   -h --help              print this help message"
-	echo "   -i --install <PATH>    use PATH as the install directory"
-	echo "   --sudo                 use sudo to install (interactive)"
-}
-
 function print_manual_instructions {
+  echo ""
+	echo "Environment variables to configure this installer:"
+	echo "   REPL_INSTALL_PATH=<PATH>  use PATH as the install directory"
+	echo "   REPL_USE_SUDO=y           use sudo to install (interactive)"
 	echo ""
 	echo "To install {{ .Program }} manually, follow these steps:"
 
@@ -83,49 +57,6 @@ function print_manual_instructions {
 	echo "  * Sudo may be required, the install directory can also be any directory in the PATH"
 	echo ""
 }
-
-# Parse the arguments. The "-" option is used to parse long options.
-while getopts ":hi:s-:" optchar; do
-	case "${optchar}" in
-		h)
-			print_help
-			print_manual_instructions
-			exit 0
-			;;
-		i)
-			OUT_DIR="${OPTARG}"
-			;;
-		-)
-			case "${OPTARG}" in
-				install)
-					OPTARG="${!OPTIND}"
-					OPTIND=$(( $OPTIND + 1 ))
-					OUT_DIR=${OPTARG/#~/${HOME}}
-					;;
-				install=*)
-					OPTARG="${OPTARG#*=}"
-					OPTIND=$(( $OPTIND + 1 ))
-					OUT_DIR=${OPTARG/#~/${HOME}}
-					;;
-				sudo)
-					OPTARG="${!OPTIND}"
-					OPTIND=$(( $OPTIND + 1 ))
-					USE_SUDO=1
-					;;
-				*)
-					echo "unknown option -${OPTARG}"
-					print_help
-					exit 1
-					;;
-				esac
-				;;
-		*)
-			echo "unknown option $opt $OPTARG"
-			print_help
-			exit 1
-			;;
-	esac
-done
 
 # Cleanup temporary files if they exist and return to the starting directory.
 # This is trapped on EXIT signals to ensure it is always called on failures.
@@ -182,6 +113,15 @@ function prompt_install_dir {
 
 # Check that the environment supports the install.
 function check_env {
+	# Check for and use any environment variables.
+	if [[ ! -z "${REPL_INSTALL_PATH:+x}" ]]; then
+		OUT_DIR="${REPL_INSTALL_PATH/#~/${HOME}}"
+	fi
+
+	if [[ ! -z "${REPL_USE_SUDO:+x}" ]]; then
+		USE_SUDO=1
+	fi
+
   # Check that we're running bash
 	[[ ! -z "${BASH_VERSION+x}" ]] || fail "Please use bash instead"
 
@@ -283,13 +223,7 @@ function check_env {
 		echo "      curl http://kots.io/install | REPL_INSTALL_PATH=/new/path bash"
 		echo "  * Set the environment variable REPL_USE_SUDO to any value and re-run this script. Keep"
 		echo "    in mind this script will block waiting on sudo:"
-		echo "      curl http://kots.io/install | REPL_USE_SUDO=1 bash"
-		echo "  * Re-run this script with the -i or --install flag set to a directory in the PATH that"
-		echo "    can be written to:"
-		echo "      curl http://kots.io/install | bash -s --install /new/path"
-		echo "  * Re-run this script with the --sudo flag. Keep in mind that this script will block"
-		echo "    waiting on sudo:"
-		echo "      curl http://kots.io/install | bash -s --sudo"
+		echo "      curl http://kots.io/install | REPL_USE_SUDO=y bash"
 		echo "  * Re-run this script with sudo:"
 		echo "      curl http://kots.io/install | sudo bash"
 		echo ""
@@ -298,6 +232,8 @@ function check_env {
 }
 
 function install {
+	check_env
+
 	echo "Downloading ${USER}/${PROG} ${RELEASE} (${URL})..."
 
 	# Download and extract the binary to the temporary directory.
@@ -350,5 +286,4 @@ function install {
 	echo "Installed at $OUT_DIR/kubectl-$PROG"
 }
 
-check_env
 install

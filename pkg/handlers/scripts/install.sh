@@ -17,7 +17,7 @@
 # Command line arguments:
 # -----------------------
 #   -i, --install  alternative installation directory to use.
-#   -s, --sudo     use sudo when writing to the installation directory.
+#   --sudo     use sudo when writing to the installation directory.
 
 READ_TIMEOUT=15
 DEFAULT_DIR="/usr/local/bin"
@@ -42,7 +42,7 @@ function print_help {
 	echo "USAGE:"
 	echo "   $(basename "$0") [OPTIONS]"
 	echo "   $(basename "$0") [OPTIONS] -i PATH"
-	echo "   $(basename "$0") [OPTIONS] -s"
+	echo "   $(basename "$0") [OPTIONS] --sudo"
 	echo ""
 	echo "ARGS:"
 	echo "   PATH      A directory to install into"
@@ -50,7 +50,7 @@ function print_help {
 	echo "OPTIONS:"
 	echo "   -h --help              print this help message"
 	echo "   -i --install <PATH>    use PATH as the install directory"
-	echo "   -s --sudo              use sudo to install (interactive)"
+	echo "   --sudo                 use sudo to install (interactive)"
 }
 
 function print_manual_instructions {
@@ -94,9 +94,6 @@ while getopts ":hi:s-:" optchar; do
 			;;
 		i)
 			OUT_DIR="${OPTARG}"
-			;;
-		s)
-			USE_SUDO=1
 			;;
 		-)
 			case "${OPTARG}" in
@@ -289,10 +286,10 @@ function check_env {
 		echo "      curl http://kots.io/install | REPL_USE_SUDO=1 bash"
 		echo "  * Re-run this script with the -i or --install flag set to a directory in the PATH that"
 		echo "    can be written to:"
-		echo "      curl http://kots.io/install | bash /dev/stdin --install /new/path"
-		echo "  * Re-run this script with the -s or --sudo flag. Keep in mind that this script will"
-		echo "    block waiting on sudo:"
-		echo "      curl http://kots.io/install | bash /dev/stdin --sudo"
+		echo "      curl http://kots.io/install | bash -s --install /new/path"
+		echo "  * Re-run this script with the --sudo flag. Keep in mind that this script will block"
+		echo "    waiting on sudo:"
+		echo "      curl http://kots.io/install | bash -s --sudo"
 		echo "  * Re-run this script with sudo:"
 		echo "      curl http://kots.io/install | sudo bash"
 		echo ""

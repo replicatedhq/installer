@@ -1,116 +1,289 @@
 #!/bin/bash
-TMP_DIR="/tmp/tmpinstalldir"
-function cleanup {
-	echo rm -rf $TMP_DIR > /dev/null
+
+# Installer script for {{ .Program }} version {{ .Release }}.
+#
+# This script will verify that the environment is suitable for installation before downloading
+# and installing {{ .Program }}.
+#
+# This script can be configured by either setting environment variables or using argument flags,
+# but the command line arguments take precedence over the environment variables.
+#
+# Environment variables:
+# ----------------------
+#   REPL_USE_SUDO          set this to any value to use sudo when writing to the installation directory.
+#
+#   REPL_INSTALL_PATH      alternative installation directory to use.
+#
+
+READ_TIMEOUT=15
+DEFAULT_DIR="/usr/local/bin"
+INSECURE="{{ .Insecure }}"
+PROG="{{ .Program }}"
+RELEASE="{{ .Release }}"
+TMP_DIR=$(mktemp -d -t replicated-XXXXXX)
+USER="{{ .User }}"
+
+function print_manual_instructions {
+  echo ""
+	echo "Environment variables to configure this installer:"
+	echo "   REPL_INSTALL_PATH=<PATH>  use PATH as the install directory"
+	echo "   REPL_USE_SUDO=y           use sudo to install (interactive)"
+	echo ""
+	echo "To install {{ .Program }} manually, follow these steps:"
+
+	if [[ -z "${URL+x}" ]]; then
+		echo "  * Download the appropriate release from https://github.com/replicatedhq/kots/releases"
+	else
+		echo "  * Download {{ .Program }} with: curl -O ${URL}"
+	fi
+
+	case "${FTYPE}" in
+		".gz")
+			echo "  * Extract the archive with: gzip -d $(basename ${URL})"
+			;;
+		".tar.gz")
+			echo "  * Extract the archive with: tar xvf $(basename ${URL})"
+			;;
+		".zip")
+			echo "  * Extract the archive with: unzip $(basename ${URL})"
+			;;
+		"")
+			;;
+		*)
+			echo "  * Extract the downloaded release"
+	esac
+
+	echo "  * Move and rename the file to a directory in the PATH: mv {{ .Program }} /install/path/kubectl-{{ .Program }}"
+	echo "  * Sudo may be required, the install directory can also be any directory in the PATH"
+	echo ""
 }
+
+# Cleanup temporary files if they exist and return to the starting directory.
+# This is trapped on EXIT signals to ensure it is always called on failures.
+function cleanup {
+	popd &> /dev/null
+	if [[ -d "${TMP_DIR}" ]]; then
+		rm -rf "${TMP_DIR}"
+	fi
+}
+trap cleanup EXIT
+
+# Print a big error message.
 function fail {
-	cleanup
-	msg=$1
-	echo "============"
-	echo "Error: $msg" 1>&2
+	msg="!! Error: $1 !!"
+	len="${#msg}"
+	border=$(printf "%*s\n" "$len" | tr " " "!")
+
+	echo ""
+	echo "$border"
+	echo "$msg" 1>&2
+	echo "$border"
+	print_manual_instructions
 	exit 1
 }
+
+# Prompt the user if they would like to create the output directory.
+function prompt_install_dir {
+	if [[ -t 0 || -t /dev/stdin ]]; then
+		INPUT="/dev/stdin"
+	elif [[ -r /dev/tty ]]; then
+		INPUT="/dev/tty"
+	fi
+	if [[ -z "${INPUT+x}" ]]; then
+	  echo "Unable to prompt user for installation directory, using ${DEFAULT_DIR}"
+		OUT_DIR="${DEFAULT_DIR}"
+		return
+	fi
+
+	echo ""
+	echo "Please provide the full path to an installation directory that can be written to. If none"
+	echo "is provided in ${READ_TIMEOUT} seconds, then ${DEFAULT_DIR} will be used."
+	echo ""
+	read -p "installation directory [${DEFAULT_DIR}]: " -t ${READ_TIMEOUT} -r REPLY < "${INPUT}"
+	echo ""
+
+	if [[ -z "${REPLY:+x}" ]]; then
+		echo "No directory given, the default of ${DEFAULT_DIR} will be used"
+		OUT_DIR="${DEFAULT_DIR}"
+		return
+	fi
+
+	OUT_DIR="${REPLY/#~/${HOME}}"
+}
+
+# Check that the environment supports the install.
+function check_env {
+	# Check for and use any environment variables.
+	if [[ ! -z "${REPL_INSTALL_PATH:+x}" ]]; then
+		OUT_DIR="${REPL_INSTALL_PATH/#~/${HOME}}"
+	fi
+
+	if [[ ! -z "${REPL_USE_SUDO:+x}" ]]; then
+		USE_SUDO=1
+	fi
+
+  # Check that we're running bash
+	[[ ! -z "${BASH_VERSION+x}" ]] || fail "Please use bash instead"
+
+	# Check the OS and architecture.
+	case $(uname -s) in
+		Darwin)
+			OS="darwin"
+			;;
+		Linux)
+			OS="linux"
+			;;
+		*)
+			fail "unsupported OS $(uname -s)"
+			;;
+	esac
+	[[ ! -z "${OS+x}" ]] || fail "could not determine the OS"
+
+	case $(uname -m) in
+		"amd64" | "x86_64")
+			ARCH="amd64"
+			;;
+		"arm64" | "aarch64")
+			ARCH="arm64"
+			;;
+		"arm")
+			ARCH="arm"
+			;;
+		"i386")
+			ARCH="386"
+			;;
+		*)
+			fail "unsupported architecture $(uname -m)"
+	esac
+	[[ ! -z "${ARCH+x}" ]] || fail "could not determine the architecture"
+
+	# Check for the current OS + arch combination in the available assets.
+	# NOTE: the case statements are built by the templating engine by ranging
+	#   over the set of assets and creating an OS_ARCH case that assigns that
+	#   asset's URL and file type.
+	case "${OS}_${ARCH}" in
+	  {{ range .Assets }}
+		{{ .OS }}_{{ .Arch }})
+			URL="{{ .URL }}"
+			FTYPE="{{ .Type }}"
+			;;
+		{{ end }}
+		*)
+			fail "No asset found for platform ${OS}-${ARCH}"
+			;;
+	esac
+	[[ ! -z "${URL+x}" || ! -z "${FTYPE+x}" ]] || fail "could not find a valid release URL for ${OS} ${ARCH}"
+
+	# Check for needed utilities.
+	command -v curl &> /dev/null || fail "curl not installed"
+	command -v find &> /dev/null || fail "find not installed"
+	command -v xargs &> /dev/null || fail "xargs not installed"
+	command -v sort &> /dev/null || fail "sort not installed"
+	command -v tail &> /dev/null || fail "tail not installed"
+	command -v cut &> /dev/null || fail "cut not installed"
+	command -v du &> /dev/null || fail "du not installed"
+
+	# Check that the assets can be extracted.
+	case "${FTYPE}" in
+		".gz")
+			command -v gzip &>/dev/null || fail "gzip is not installed"
+			;;
+		".tar.gz")
+			command -v tar &>/dev/null || fail "tar is not installed"
+			;;
+		".zip")
+			command -v unzip &>/dev/null || fail "zip is not installed"
+			;;
+		"")
+			;;
+		*)
+			fail "unsupported file type ${FTYPE}"
+	esac
+
+	# Check if the install directory needs to be prompted for and exists.
+	if [[ -z "${OUT_DIR:+x}" ]]; then
+		 prompt_install_dir
+	fi
+
+	if [[ ! -d "${OUT_DIR}" ]]; then
+		if [[ ! -z "${USE_SUDO+x}" ]]; then
+			sudo mkdir -p "${OUT_DIR}" &> /dev/null || true
+		else
+			mkdir -p "${OUT_DIR}" &> /dev/null || true
+		fi
+	fi
+
+	if [[ ! -w "${OUT_DIR}" && -z "${USE_SUDO+x}" ]]; then
+		echo ""
+		echo "The installation directory ${OUT_DIR} is not writeable by this user, and installation has failed."
+		echo ""
+		echo "To fix this, do one of the following:"
+		echo "  * Set the environment variable REPL_INSTALL_PATH to a directory in the PATH that can"
+		echo "    be written to and re-run this script:"
+		echo "      curl http://kots.io/install | REPL_INSTALL_PATH=/new/path bash"
+		echo "  * Set the environment variable REPL_USE_SUDO to any value and re-run this script. Keep"
+		echo "    in mind this script will block waiting on sudo:"
+		echo "      curl http://kots.io/install | REPL_USE_SUDO=y bash"
+		echo "  * Re-run this script with sudo:"
+		echo "      curl http://kots.io/install | sudo bash"
+		echo ""
+		fail "cannot write to the installation directory ${OUT_DIR}"
+	fi
+}
+
 function install {
-	#settings
-	USER="{{ .User }}"
-	PROG="{{ .Program }}"
-	MOVE="{{ .MoveToPath }}"
-	RELEASE="{{ .Release }}"
-	INSECURE="{{ .Insecure }}"
-	OUT_DIR="{{ if .MoveToPath }}/usr/local/bin{{ else }}$(pwd){{ end }}"
-	GH="https://github.com"
-	#bash check
-	[ ! "$BASH_VERSION" ] && fail "Please use bash instead"
-	[ ! -d $OUT_DIR ] && fail "output directory missing: $OUT_DIR"
-	#dependency check, assume we are a standard POISX machine
-	which find > /dev/null || fail "find not installed"
-	which xargs > /dev/null || fail "xargs not installed"
-	which sort > /dev/null || fail "sort not installed"
-	which tail > /dev/null || fail "tail not installed"
-	which cut > /dev/null || fail "cut not installed"
-	which du > /dev/null || fail "du not installed"
-	GET=""
-	if which curl > /dev/null; then
-		GET="curl"
-		if [[ $INSECURE = "true" ]]; then GET="$GET --insecure"; fi
-		GET="$GET --fail -# -L"
-	elif which wget > /dev/null; then
-		GET="wget"
-		if [[ $INSECURE = "true" ]]; then GET="$GET --no-check-certificate"; fi
-		GET="$GET -qO-"
-	else
-		fail "neither wget/curl are installed"
-	fi
-	#find OS #TODO BSDs and other posixs
-	case `uname -s` in
-	Darwin) OS="darwin";;
-	Linux) OS="linux";;
-	*) fail "unknown os: $(uname -s)";;
+	check_env
+
+	echo "Downloading ${USER}/${PROG} ${RELEASE} (${URL})..."
+
+	# Download and extract the binary to the temporary directory.
+	pushd $TMP_DIR &> /dev/null
+
+	local get_opts=("${INSECURE:+--insecure}" "--fail" "-#" "-L")
+
+	case "${FTYPE}" in
+		".gz")
+			curl "${get_opts[@]}" "${URL}" | gzip -d - > "${PROG}" || fail "download and extraction failed"
+			;;
+		".tar.gz")
+			curl "${get_opts[@]}" "${URL}" | tar xzf - > "${PROG}" || fail "download and extraction failed"
+			;;
+		".zip")
+			local tmp_file=$(basename $URL)
+		  curl "${get_opts[@]}" "${URL}" > "${tmp_file}" && unzip -o -qq "${tmp_file}" || fail "download and extraction failed"
+			rm "${tmp_file}"
+			;;
+		"")
+		  curl "${get_opts[@]}" "${URL}" > "{{ .Program }}_${OS}_${ARCH}" || fail "download failed"
+			;;
+		*)
+			fail "unknown file type ${FTYPE}"
 	esac
-	#find ARCH
-	UNAME=`uname -m`
-	if [ "$UNAME" == "amd64" ] || [ "$UNAME" == "x86_64" ]; then
-		ARCH="amd64"
-	elif [ "$UNAME" == "arm64" ] || [ "$UNAME" == "aarch64" ]; then
-		ARCH="arm64"
-	elif [ "$UNAME" == "arm" ]; then
-		ARCH="arm"
-	elif [ "$UNAME" == "i386" ]; then
-		ARCH="386"
-	else
-		fail "unknown arch: $UNAME"
-	fi
-	#choose from asset list
-	URL=""
-	FTYPE=""
-	case "${OS}_${ARCH}" in{{ range .Assets }}
-	{{ .OS }}_{{ .Arch }})
-		URL="{{ .URL }}"
-		FTYPE="{{ .Type }}"
-		;;{{end}}
-	*) fail "No asset for platform ${OS}-${ARCH}";;
-	esac
-	#got URL! download it...
-	echo "{{ if .MoveToPath }}Installing{{ else }}Downloading{{ end }} $USER/$PROG $RELEASE ($URL)..."
-	#enter tempdir
-	mkdir -p $TMP_DIR
-	cd $TMP_DIR
-	if [[ $FTYPE = ".gz" ]]; then
-		which gzip > /dev/null || fail "gzip is not installed"
-		#gzipped binary
-		NAME="${PROG}_${OS}_${ARCH}.gz"
-		GZURL="$GH/releases/download/$RELEASE/$NAME"
-		#gz download!
-		bash -c "$GET $URL" | gzip -d - > $PROG || fail "download failed"
-	elif [[ $FTYPE = ".tar.gz" ]]; then
-		#check if archiver progs installed
-		which tar > /dev/null || fail "tar is not installed"
-		which gzip > /dev/null || fail "gzip is not installed"
-		bash -c "$GET $URL" | tar zxf - || fail "download failed"
-	elif [[ $FTYPE = ".zip" ]]; then
-		which unzip > /dev/null || fail "unzip is not installed"
-		bash -c "$GET $URL" > tmp.zip || fail "download failed"
-		unzip -o -qq tmp.zip || fail "unzip failed"
-		rm tmp.zip || fail "cleanup failed"
-	elif [[ $FTYPE = "" ]]; then
-		bash -c "$GET $URL" > "{{ .Program }}_${OS}_${ARCH}" || fail "download failed"
-	else
-		fail "unknown file type: $FTYPE"
-	fi
-	#search subtree largest file (bin)
+
+	echo "Installing to ${OUT_DIR}"
+
 	TMP_BIN=$(find . -type f | xargs du | sort -n | tail -n 1 | cut -f 2)
-	if [ ! -f "$TMP_BIN" ]; then
+	if [ ! -f "${TMP_BIN}" ]; then
 		fail "could not find downloaded binary"
 	fi
+
 	#ensure its larger than 2MB
-	if [[ $(du -m $TMP_BIN | cut -f1) -lt 2 ]]; then
+	if [[ $(du -m "${TMP_BIN}" | cut -f1) -lt 2 ]]; then
 		fail "resulting file is smaller than 2MB, not a go binary"
 	fi
+
+	popd &> /dev/null
+
 	#move into PATH or cwd
-	chmod +x $TMP_BIN || fail "chmod +x failed"
-	mv $TMP_BIN $OUT_DIR/kubectl-$PROG 2>/dev/null || sudo mv $TMP_BIN $OUT_DIR/kubectl-$PROG || fail "mv failed" #FINAL STEP!
-	echo "{{ if .MoveToPath }}Installed at{{ else }}Downloaded to{{ end }} $OUT_DIR/kubectl-$PROG"
-	#done
-	cleanup
+	chmod +x "${TMP_DIR}/${TMP_BIN}" || fail "chmod +x failed"
+
+	if [[ -z "${USE_SUDO+x}" ]]; then
+		mv "${TMP_DIR}/${TMP_BIN}" "${OUT_DIR}/kubectl-${PROG}" &> /dev/null || fail "installing to ${OUT_DIR} failed"
+	else
+		sudo mv "${TMP_DIR}/${TMP_BIN}" "${OUT_DIR}/kubectl-${PROG}" &> /dev/null || fail "installing to ${OUT_DIR} failed"
+	fi
+
+	echo "Installed at $OUT_DIR/kubectl-$PROG"
 }
+
 install

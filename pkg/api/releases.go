@@ -12,7 +12,7 @@ import (
 	"golang.org/x/oauth2"
 )
 
-const cacheDuration = time.Minute * 5
+const cacheDuration = time.Minute
 
 var client *github.Client
 var clientMut sync.Mutex
@@ -152,10 +152,9 @@ func addToCache(index string, entry cacheEntry) {
 	resultsCache[index] = &entry
 }
 
-// once an hour, look at the list of things we have cached and remove things that do not need to be there
 func backgroundCacheCleanupLoop() {
 	for {
-		time.Sleep(time.Hour)
+		time.Sleep(cacheDuration)
 		log.Printf("running cache cleanup\n")
 		cacheCleanup()
 	}

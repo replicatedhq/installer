@@ -22,7 +22,7 @@ var installTemplate string
 var (
 	fileExtRe = regexp.MustCompile(`(\.[a-z][a-z0-9]+)+$`)
 	posixOSRe = regexp.MustCompile(`(darwin|linux|(net|free|open)bsd|mac|osx)`)
-	archRe    = regexp.MustCompile(`(arm|386|amd64|32|64)`)
+	archRe    = regexp.MustCompile(`(arm64|386|amd64|32|64)`)
 )
 
 type Asset struct {
